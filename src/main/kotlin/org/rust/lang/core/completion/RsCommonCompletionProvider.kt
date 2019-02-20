@@ -21,6 +21,7 @@ import org.rust.lang.core.psi.*
 import org.rust.lang.core.psi.ext.*
 import org.rust.lang.core.psiElement
 import org.rust.lang.core.resolve.*
+import org.rust.lang.core.resolve.ref.FieldResolveVariant
 import org.rust.lang.core.resolve.ref.MethodResolveVariant
 import org.rust.lang.core.stubs.index.RsNamedElementIndex
 import org.rust.lang.core.stubs.index.RsReexportIndex
@@ -77,36 +78,34 @@ object RsCommonCompletionProvider : CompletionProvider<CompletionParameters>() {
                         )
                     )
                 }
-
-                is RsMethodCall -> {
-                    val lookup = ImplLookup.relativeTo(element)
-                    val receiver = CompletionUtil.getOriginalOrSelf(element.receiver).type
-                    processMethodCallExprResolveVariants(
-                        lookup,
-                        receiver,
-                        filterCompletionVariantsByVisibility(
-                            filterMethodCompletionVariantsByTraitBounds(it, lookup, receiver),
-                            element.containingMod
-                        )
-                    )
-                }
-
-                is RsFieldLookup -> {
-                    val lookup = ImplLookup.relativeTo(element)
-                    val receiver = CompletionUtil.getOriginalOrSelf(element.receiver).type
-                    processDotExprResolveVariants(
-                        lookup,
-                        receiver,
-                        filterCompletionVariantsByVisibility(
-                            filterMethodCompletionVariantsByTraitBounds(it, lookup, receiver),
-                            element.containingMod
-                        )
-                    )
-                }
             }
         }
 
+        if (element is RsMethodOrField) {
+            addMethodAndFieldCompletion(element, result)
+        }
+
         addCompletionsFromIndex(parameters, result, processedPathNames)
+    }
+
+    private fun addMethodAndFieldCompletion(element: RsMethodOrField, result: CompletionResultSet) {
+        val lookup = ImplLookup.relativeTo(element)
+        val receiver = CompletionUtil.getOriginalOrSelf(element.receiver).type
+        val processResolveVariants = if (element is RsMethodCall) {
+            ::processMethodCallExprResolveVariants
+        } else {
+            ::processDotExprResolveVariants
+        }
+        val processor = methodAndFieldCompletionProcessor(element, result)
+
+        processResolveVariants(
+            lookup,
+            receiver,
+            filterCompletionVariantsByVisibility(
+                filterMethodCompletionVariantsByTraitBounds(processor, lookup, receiver),
+                element.containingMod
+            )
+        )
     }
 
     private fun addCompletionsFromIndex(
@@ -147,8 +146,7 @@ object RsCommonCompletionProvider : CompletionProvider<CompletionParameters>() {
                         override fun handleInsert(element: RsElement, scopeName: String, context: InsertionContext, item: LookupElement) {
                             super.handleInsert(element, scopeName, context, item)
                             context.commitDocument()
-                            val mod = PsiTreeUtil.findElementOfClassAtOffset(context.file, context.startOffset, RsMod::class.java, false) ?: return
-                            mod.importItem(candidate)
+                            context.containingMod?.importItem(candidate)
                         }
                     })
                 }
@@ -180,6 +178,9 @@ object RsCommonCompletionProvider : CompletionProvider<CompletionParameters>() {
 
 private fun isAncestorTypesEquals(psi1: PsiElement, psi2: PsiElement): Boolean =
     psi1.ancestors.zip(psi2.ancestors).all { (a, b) -> a.javaClass == b.javaClass }
+
+private val InsertionContext.containingMod: RsMod?
+    get() = PsiTreeUtil.findElementOfClassAtOffset(file, startOffset, RsMod::class.java, false)
 
 private fun filterAssocTypes(
     path: RsPath,
@@ -240,6 +241,30 @@ private fun filterMethodCompletionVariantsByTraitBounds(
 
         return false
     }
+}
+
+private fun methodAndFieldCompletionProcessor(
+    element: RsMethodOrField,
+    result: CompletionResultSet
+): RsResolveProcessor = fun(e: ScopeEntry): Boolean {
+    when (e) {
+        is FieldResolveVariant -> result.addElement(createLookupElement(e.element, e.name))
+        is MethodResolveVariant -> {
+            if (e.element.isTest) return false
+            val traitToImport = AutoImportFix.getImportCandidates(element.project, element, listOf(e)).orEmpty().singleOrNull()
+
+            result.addElement(createLookupElement(e.element, e.name, insertHandler = object : RsDefaultInsertHandler() {
+                override fun handleInsert(element: RsElement, scopeName: String, context: InsertionContext, item: LookupElement) {
+                    super.handleInsert(element, scopeName, context, item)
+                    context.commitDocument()
+                    if (traitToImport != null) {
+                        context.containingMod?.importItem(traitToImport)
+                    }
+                }
+            }))
+        }
+    }
+    return false
 }
 
 private fun addProcessedPathName(
