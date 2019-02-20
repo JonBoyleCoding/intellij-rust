@@ -17,6 +17,7 @@ import com.intellij.util.ProcessingContext
 import org.rust.ide.inspections.import.AutoImportFix
 import org.rust.ide.inspections.import.ImportContext
 import org.rust.ide.inspections.import.importItem
+import org.rust.ide.settings.RsCodeInsightSettings
 import org.rust.lang.core.psi.*
 import org.rust.lang.core.psi.ext.*
 import org.rust.lang.core.psiElement
@@ -251,7 +252,11 @@ private fun methodAndFieldCompletionProcessor(
         is FieldResolveVariant -> result.addElement(createLookupElement(e.element, e.name))
         is MethodResolveVariant -> {
             if (e.element.isTest) return false
-            val traitToImport = AutoImportFix.getImportCandidates(element.project, element, listOf(e)).orEmpty().singleOrNull()
+            val traitToImport = if (RsCodeInsightSettings.getInstance().addTraitImport) {
+                AutoImportFix.getImportCandidates(element.project, element, listOf(e)).orEmpty().singleOrNull()
+            } else {
+                null
+            }
 
             result.addElement(createLookupElement(e.element, e.name, insertHandler = object : RsDefaultInsertHandler() {
                 override fun handleInsert(element: RsElement, scopeName: String, context: InsertionContext, item: LookupElement) {
